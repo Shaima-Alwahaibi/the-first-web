@@ -1,13 +1,14 @@
-"""Phase-1 academic rule demonstration.
+"""One-page Phase-1 rule-based recommendation demo.
 
-The page collects a transcript, confirms the extraction, and presents the
-validated Phase-1 recommendation. It does not calculate rule scores.
+The page displays results from the validated research modules.
+It does not calculate eligibility or rule scores.
 """
 
 from __future__ import annotations
 
 import logging
 
+import pandas as pd
 import streamlit as st
 
 from app.config import (
@@ -19,178 +20,278 @@ from app.config import (
     MSG_UNREADABLE,
     sample_pdfs,
 )
-from app.export_service import recommendation_workbook, recommended_csv
+from app.export_service import recommendation_workbook
+from app.limitations import manager_limitations
 from app.pipeline_adapter import PipelineDataError
-from app.recommendation_service import generate_recommendation
+from app.recommendation_service import generate_recommendation, rule_framework
 from app.transcript_parser import ImageTranscriptError, TranscriptReadError, parse_transcript_pdf
 from app.transcript_validator import validate_transcript
-from app.ui_helpers import (
-    inject_styles,
-    render_about,
-    render_history,
-    render_limitations,
-    render_methodology,
-    render_overview,
-    render_profile,
-    render_recommendations,
-    render_verification,
-)
 
 LOGGER = logging.getLogger("phase1_demo")
-PAGES = (
-    "Overview",
-    "Student Transcript",
-    "Academic Profile",
-    "Course Analysis",
-    "Recommendations",
-    "Rule Methodology",
-    "Limitations",
-    "About This Phase",
-)
 
 
 def main() -> None:
-    """Run the Streamlit demonstration."""
+    """Show the transcript, the academic summary, and the rule-based plan on one page."""
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    st.set_page_config(
-        page_title="Phase 1 Course Recommendation",
-        page_icon="🎓",
-        layout="wide",
+    st.set_page_config(page_title="Phase 1 Course Recommendation", layout="wide")
+    st.title("Intelligent Student Course Recommendation System")
+    st.subheader("Phase 1 – Rule-Based Recommendation Demo")
+    st.write(
+        "Upload a student's transcript to identify completed, failed, withdrawn, and remaining courses, "
+        "check academic eligibility and prerequisites, and generate a rule-based recommended study plan."
     )
-    inject_styles()
-    _initialize()
-    page = st.sidebar.radio("Navigation", PAGES, key="nav")
-    st.sidebar.caption(MSG_PRIVACY)
-    if page == "Overview":
-        render_overview()
-        _input_panel()
-    elif page == "Student Transcript":
-        _input_panel()
-        _verification_panel()
-    elif page == "Academic Profile":
-        _require_result(render_profile)
-    elif page == "Course Analysis":
-        _require_result(render_history)
-    elif page == "Recommendations":
-        _require_result(_recommendation_page)
-    elif page == "Rule Methodology":
-        render_methodology()
-    elif page == "Limitations":
-        render_limitations()
-    else:
-        render_about()
+    st.write("This phase uses academic rules only. Machine-learning models will be added in later phases.")
+    st.caption(MSG_PRIVACY)
+
+    _input_section()
+    result = st.session_state.get("result")
+    if result is None:
+        return
+    _student_summary(result)
+    _history(result)
+    _recommendations(result)
+    _blocked(result)
+    _rule_table()
+    _limitations()
+    _download(result)
 
 
-def _initialize() -> None:
-    st.session_state.setdefault("parsed", None)
-    st.session_state.setdefault("result", None)
-    st.session_state.setdefault("nav", "Overview")
-    pending = st.session_state.pop("_pending_page", None)
-    if pending:
-        st.session_state.nav = pending
-
-
-def _input_panel() -> None:
-    st.subheader("Student transcript")
+def _input_section() -> None:
     samples = sample_pdfs()
-    if samples:
-        choice = st.selectbox("Sample transcript", list(samples), key="sample_choice")
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Upload Student Transcript PDF**")
+        uploaded = st.file_uploader("Transcript PDF", type=["pdf"], label_visibility="collapsed")
+        if uploaded is not None and st.button("Use uploaded transcript"):
+            payload = uploaded.getvalue()
+            if not str(uploaded.name).lower().endswith(".pdf"):
+                st.error(MSG_TYPE)
+            elif not payload:
+                st.error(MSG_EMPTY)
+            elif len(payload) > MAX_UPLOAD_BYTES:
+                st.error(MSG_SIZE)
+            else:
+                _process(payload, uploaded.name)
+    with right:
+        st.markdown("**Run Sample Student**")
+        if not samples:
+            st.warning("Sample transcripts are not available in this copy.")
+            return
+        choice = st.selectbox("Sample", list(samples), label_visibility="collapsed")
         if st.button("Run Sample Student", type="primary"):
-            if _load_bytes(samples[choice].read_bytes(), samples[choice].name):
-                st.session_state._pending_page = "Student Transcript"
-                st.rerun()
-    else:
-        st.warning("Sample transcripts are not available in this copy of the demo.")
-    uploaded = st.file_uploader("Upload a UTAS transcript PDF", type=["pdf"])
-    if uploaded is not None and st.button("Read uploaded transcript"):
-        payload = uploaded.getvalue()
-        if not str(uploaded.name).lower().endswith(".pdf"):
-            st.error(MSG_TYPE)
-        elif not payload:
-            st.error(MSG_EMPTY)
-        elif len(payload) > MAX_UPLOAD_BYTES:
-            st.error(MSG_SIZE)
-        elif _load_bytes(payload, uploaded.name):
-            st.session_state._pending_page = "Student Transcript"
-            st.rerun()
+            _process(samples[choice].read_bytes(), samples[choice].name)
 
 
-def _load_bytes(payload: bytes, source_name: str) -> bool:
+def _process(payload: bytes, source_name: str) -> None:
     try:
         parsed = parse_transcript_pdf(payload, source_name)
+        validation = validate_transcript(parsed)
+        if validation["errors"]:
+            st.session_state.result = None
+            st.error(validation["errors"][0])
+            return
+        st.session_state.result = generate_recommendation(parsed)
     except ImageTranscriptError as exc:
         LOGGER.info("Image transcript rejected")
+        st.session_state.result = None
         st.error(str(exc))
-        return False
     except TranscriptReadError:
         LOGGER.info("Unreadable transcript rejected")
+        st.session_state.result = None
         st.error(MSG_UNREADABLE)
-        return False
+    except PipelineDataError as exc:
+        LOGGER.info("Recommendation stopped")
+        st.session_state.result = None
+        st.error(str(exc))
     except Exception:
-        LOGGER.exception("Transcript parsing failed")
-        st.error(MSG_UNREADABLE)
-        return False
-    st.session_state.parsed = parsed
-    st.session_state.result = None
-    return True
+        LOGGER.exception("Demo processing failed")
+        st.session_state.result = None
+        st.error("The transcript could not be processed. Please use a supported UTAS transcript PDF.")
 
 
-def _verification_panel() -> None:
-    parsed = st.session_state.parsed
-    if not parsed:
-        st.info("Run a sample student or upload a transcript to extract it.")
+def _student_summary(result) -> None:
+    profile = result.student_profile
+    st.header("Student Summary")
+    st.markdown(
+        "\n".join(
+            [
+                f"**Student Code:** {profile.get('Student Code', 'Requires Review')}",
+                f"**Specialization:** {profile.get('Specialization', 'Requires Review')}",
+                f"**Current CGPA:** {_number(profile.get('CGPA'))}",
+                f"**Latest Semester:** {profile.get('Latest Semester', 'Requires Review')}",
+            ]
+        )
+    )
+    holdout = result.metadata.get("holdout_policy")
+    if holdout:
+        st.caption(str(holdout))
+    first, second, third, fourth = st.columns(4)
+    first.metric("Completed Courses", _section_count(result, "Completed"))
+    second.metric("Failed Courses", _section_count(result, "Failed"))
+    third.metric("Withdrawn Courses", _section_count(result, "Withdrawn"))
+    fourth.metric("Remaining Courses", _remaining_count(result))
+
+
+def _history(result) -> None:
+    st.header("Academic History Summary")
+    table = _history_table(result)
+    if table.empty:
+        st.info("No course history was returned for this student.")
         return
-    render_verification(parsed)
-    validation = validate_transcript(parsed)
-    for error in validation["errors"]:
-        st.error(error)
-    if validation["errors"]:
+    st.dataframe(table, hide_index=True, width="stretch")
+
+
+def _recommendations(result) -> None:
+    st.header("Recommended Courses")
+    meta = result.metadata
+    st.markdown(
+        "\n".join(
+            [
+                f"**Recommended Courses:** {meta.get('recommended_courses', 0)}",
+                f"**Recommended Credits:** {_whole(meta.get('recommended_credits'))}",
+                f"**Academic Load:** {meta.get('academic_load', 'Requires Review')}",
+            ]
+        )
+    )
+    columns = ["Rank", "Course Code", "Course Name", "Type", "Rule Score", "Reason"]
+    view = result.selected_courses.rename(
+        columns={"Course": "Course Code", "Recommendation Reason": "Reason"}
+    )
+    show = [column for column in columns if column in view.columns]
+    if view.empty:
+        st.info("The rule engine did not confirm any courses for this student.")
         return
-    if st.button("Generate Recommendation", type="primary"):
-        try:
-            st.session_state.result = generate_recommendation(parsed)
-        except PipelineDataError as exc:
-            LOGGER.info("Recommendation stopped: %s", exc.__class__.__name__)
-            st.error(str(exc))
-            return
-        except Exception:
-            LOGGER.exception("Recommendation failed")
-            st.error("The recommendation could not be completed. Please review the extracted transcript.")
-            return
-        st.session_state._pending_page = "Academic Profile"
-        st.rerun()
+    st.dataframe(_scores(view[show], "Rule Score"), hide_index=True, width="stretch")
+    notes = [
+        note for note in result.selected_courses.get("Holdout Note", pd.Series(dtype=str)).tolist()
+        if str(note).strip()
+    ]
+    if notes:
+        st.caption(notes[0])
 
 
-def _recommendation_page(result: object) -> None:
-    render_recommendations(result)
-    workbook = recommendation_workbook(result)
-    csv_bytes = recommended_csv(result)
+def _blocked(result) -> None:
+    st.header("Not Eligible / Blocked Courses")
+    blocked = result.blocked_courses.rename(columns={"Course": "Course Code", "Score": "Rule Score"})
+    show = [column for column in ["Course Code", "Course Name", "Rule Score", "Reason"] if column in blocked.columns]
+    if blocked.empty:
+        st.success("No blocked courses were returned for this student.")
+        return
+    st.dataframe(_scores(blocked[show], "Rule Score"), hide_index=True, width="stretch")
+
+
+def _rule_table() -> None:
+    st.header("How Rule Score Works")
+    st.write("Eligibility is decided before a rule score is used. A course that is not eligible scores 0.00 and is not recommended.")
+    table = rule_framework()
+    table["Rule Score"] = table["Rule Score"].map(lambda value: f"{float(value):.2f}")
+    st.dataframe(
+        table.rename(columns={"Academic condition": "Rule Condition", "Advisor meaning": "Meaning"}),
+        hide_index=True,
+        width="stretch",
+    )
+
+
+def _limitations() -> None:
+    st.header("Current Limitations")
+    for item in manager_limitations():
+        st.write(f"- {item}")
+
+
+def _download(result) -> None:
     code = result.metadata.get("student_code") or "student"
-    first, second = st.columns(2)
-    first.download_button(
+    st.download_button(
         "Download Recommendation Excel",
-        data=workbook,
+        data=recommendation_workbook(result),
         file_name=f"{code}_phase1_recommendation.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    second.download_button(
-        "Download recommended courses CSV",
-        data=csv_bytes,
-        file_name=f"{code}_recommended_courses.csv",
-        mime="text/csv",
-    )
 
 
-def _require_result(renderer) -> None:
-    result = st.session_state.result
-    if result is None:
-        st.info("Confirm an extracted transcript and choose Generate Recommendation.")
-        if st.button("Go to transcript"):
-            st.session_state._pending_page = "Student Transcript"
-            st.rerun()
-        return
-    renderer(result)
+def _history_table(result) -> pd.DataFrame:
+    rows = []
+    seen: set[str] = set()
+    repeat_frame = result.course_history.get("Repeated", pd.DataFrame())
+    repeated_codes = set()
+    if isinstance(repeat_frame, pd.DataFrame) and not repeat_frame.empty and "Course Code" in repeat_frame.columns:
+        repeated_codes = set(repeat_frame["Course Code"].astype(str))
+    for status in ("Completed", "Failed", "Withdrawn"):
+        frame = result.course_history.get(status, pd.DataFrame())
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            continue
+        for _, row in frame.iterrows():
+            code = _text(row.get("Course Code"))
+            name = _text(row.get("Course Name") or row.get("Course Title"))
+            label = "Repeated" if code in repeated_codes else status
+            rows.append({"Course": f"{code} {name}".strip(), "Grade": _first_grade(row), "Status": label})
+            seen.add(code)
+    repeat_frame = result.course_history.get("Repeated", pd.DataFrame())
+    if isinstance(repeat_frame, pd.DataFrame) and not repeat_frame.empty:
+        for _, row in repeat_frame.iterrows():
+            code = _text(row.get("Course Code"))
+            if not code or code in seen:
+                continue
+            name = _text(row.get("Course Name") or row.get("Course Title"))
+            grade = _text(row.get("Grade")) or _first_grade(row)
+            rows.append({"Course": f"{code} {name}".strip(), "Grade": grade, "Status": "Repeated"})
+            seen.add(code)
+    return pd.DataFrame(rows, columns=["Course", "Grade", "Status"])
+
+
+def _first_grade(row) -> str:
+    for column in ("Completion Grade", "Latest Grade", "Grade"):
+        if column in row.index:
+            text = _text(row.get(column))
+            if text:
+                return text
+    return ""
+
+
+def _section_count(result, name: str) -> int:
+    frame = result.course_history.get(name)
+    if not isinstance(frame, pd.DataFrame):
+        return 0
+    return int(len(frame))
+
+
+def _remaining_count(result) -> int:
+    value = result.student_profile.get("Remaining Courses")
+    number = pd.to_numeric(value, errors="coerce")
+    if pd.notna(number):
+        return int(number)
+    frame = result.course_history.get("Remaining")
+    if isinstance(frame, pd.DataFrame):
+        return int(len(frame))
+    return 0
+
+
+def _scores(frame: pd.DataFrame, column: str) -> pd.DataFrame:
+    view = frame.copy()
+    if column in view.columns:
+        view[column] = view[column].map(lambda value: "" if pd.isna(value) else f"{float(value):.2f}")
+    return view
+
+
+def _number(value) -> str:
+    number = pd.to_numeric(value, errors="coerce")
+    if pd.isna(number):
+        return "Requires Review"
+    return f"{float(number):.2f}"
+
+
+def _whole(value) -> str:
+    number = pd.to_numeric(value, errors="coerce")
+    if pd.isna(number):
+        return "Requires Review"
+    return str(int(round(float(number))))
+
+
+def _text(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    return "" if text in {"nan", "None"} else text
 
 
 if __name__ == "__main__":

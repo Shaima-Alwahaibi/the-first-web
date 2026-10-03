@@ -6,6 +6,20 @@ from pathlib import Path
 
 from app.config import research_root
 
+MANAGER_LIMITATIONS = (
+    "General Requirement elective pool is incomplete.",
+    "Some foundation prerequisite evidence still requires review.",
+    "Officially Postponed policy requires confirmation.",
+    "The level-mixing LCGPA and English threshold was not formally supplied.",
+)
+
+
+def manager_limitations() -> list[str]:
+    """Return the short unresolved items already recorded for Phase 1."""
+
+    return list(MANAGER_LIMITATIONS)
+
+
 FALLBACK_LIMITATIONS = (
     "No official General Requirement course list. Study Plan Courses, Elective Pools, Prerequisite Rules, Advising Rules, and Validation Lists were checked. Only the empty slot exists. 273 students keep the status General Requirement Elective — Official Named Pool Required.",
     "No student-level FPMS0001 evidence. Transcript Extracted has no foundation rows. The sample PDFs for STUD-016 and STUD-175 contain other FP codes and do not contain FPMS0001. Five MATH1202 rows stay in manual review.",

@@ -133,9 +133,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(all(stage["state"] == "confirmed" for stage in result.stages))
         workbook = recommendation_workbook(result)
         sheets = pd.ExcelFile(BytesIO(workbook)).sheet_names
-        self.assertIn("Recommended Courses", sheets)
-        self.assertIn("Blocked Courses", sheets)
-        self.assertIn("Warnings", sheets)
+        self.assertEqual(sheets, ["Student Summary", "Recommended Courses", "Blocked Courses"])
         self.assertNotIn(b"C:\\Users", workbook)
 
     def test_bundled_demo_extract_matches_the_validated_plan(self) -> None:

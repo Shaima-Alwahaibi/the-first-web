@@ -1,0 +1,13 @@
+{
+  "name": "Phase 1 course recommender",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "postCreateCommand": "pip install -r requirements.txt",
+  "postStartCommand": "python -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true",
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": {
+      "label": "Course recommender",
+      "onAutoForward": "ignore"
+    }
+  }
+}

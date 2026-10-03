@@ -46,8 +46,8 @@ MSG_PREREQUISITE = (
     "Recommendation requires academic review because prerequisite information is incomplete."
 )
 MSG_PRIVACY = (
-    "Uploaded transcripts are processed for the current demo session and are not "
-    "intentionally stored permanently."
+    "Uploaded transcripts and the recommendation are shown for this visit only. "
+    "The app does not save the output."
 )
 
 UNRESOLVED_PATHWAYS = {
@@ -90,16 +90,16 @@ def ensure_research_importable() -> Path:
 
 
 def output_dir() -> Path:
-    """Prefer the research outputs. Fall back to the bundled demo extract."""
+    """Use the two-student demo extract so the page does not read the full cohort workbooks."""
 
+    bundled = WEB_ROOT / "data" / "demo"
+    if (bundled / "phase1_student_academic_pack.xlsx").is_file():
+        return bundled
     root = research_root()
     if root is not None:
         parent_outputs = root / "outputs"
         if (parent_outputs / "phase1_student_academic_pack.xlsx").is_file():
             return parent_outputs
-    bundled = WEB_ROOT / "data" / "demo"
-    if (bundled / "phase1_student_academic_pack.xlsx").is_file():
-        return bundled
     raise FileNotFoundError(
         "Validated Phase-1 outputs are not available. The demo cannot build a new academic result."
     )

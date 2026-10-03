@@ -18,9 +18,7 @@ from app.config import (
     MSG_SIZE,
     MSG_TYPE,
     MSG_UNREADABLE,
-    sample_pdfs,
 )
-from app.export_service import recommendation_workbook
 from app.limitations import manager_limitations
 from app.pipeline_adapter import PipelineDataError
 from app.recommendation_service import generate_recommendation, rule_framework
@@ -55,60 +53,62 @@ def main() -> None:
     _blocked(result)
     _rule_table()
     _limitations()
-    _download(result)
 
 
 def _input_section() -> None:
-    samples = sample_pdfs()
-    left, right = st.columns(2)
-    with left:
-        st.markdown("**Upload Student Transcript PDF**")
-        uploaded = st.file_uploader("Transcript PDF", type=["pdf"], label_visibility="collapsed")
-        if uploaded is not None and st.button("Use uploaded transcript"):
-            payload = uploaded.getvalue()
-            if not str(uploaded.name).lower().endswith(".pdf"):
-                st.error(MSG_TYPE)
-            elif not payload:
-                st.error(MSG_EMPTY)
-            elif len(payload) > MAX_UPLOAD_BYTES:
-                st.error(MSG_SIZE)
-            else:
-                _process(payload, uploaded.name)
-    with right:
-        st.markdown("**Run Sample Student**")
-        if not samples:
-            st.warning("Sample transcripts are not available in this copy.")
-            return
-        choice = st.selectbox("Sample", list(samples), label_visibility="collapsed")
-        if st.button("Run Sample Student", type="primary"):
-            _process(samples[choice].read_bytes(), samples[choice].name)
+    st.markdown("**Upload Student Transcript PDF**")
+    uploaded = st.file_uploader("Transcript PDF", type=["pdf"], label_visibility="collapsed")
+    if uploaded is None:
+        st.session_state.result = None
+        st.session_state.upload_token = None
+        st.session_state.upload_error = None
+        return
+    payload = uploaded.getvalue()
+    token = (uploaded.name, len(payload))
+    if st.session_state.get("upload_token") != token:
+        st.session_state.upload_token = token
+        st.session_state.upload_error = _process(payload, uploaded.name)
+    error = st.session_state.get("upload_error")
+    if error:
+        st.error(error)
 
 
-def _process(payload: bytes, source_name: str) -> None:
+def _process(payload: bytes, source_name: str) -> str | None:
+    """Read one uploaded transcript in memory and return an error message, if any."""
+
+    if not str(source_name).lower().endswith(".pdf"):
+        st.session_state.result = None
+        return MSG_TYPE
+    if not payload:
+        st.session_state.result = None
+        return MSG_EMPTY
+    if len(payload) > MAX_UPLOAD_BYTES:
+        st.session_state.result = None
+        return MSG_SIZE
     try:
         parsed = parse_transcript_pdf(payload, source_name)
         validation = validate_transcript(parsed)
         if validation["errors"]:
             st.session_state.result = None
-            st.error(validation["errors"][0])
-            return
+            return validation["errors"][0]
         st.session_state.result = generate_recommendation(parsed)
+        return None
     except ImageTranscriptError as exc:
         LOGGER.info("Image transcript rejected")
         st.session_state.result = None
-        st.error(str(exc))
+        return str(exc)
     except TranscriptReadError:
         LOGGER.info("Unreadable transcript rejected")
         st.session_state.result = None
-        st.error(MSG_UNREADABLE)
+        return MSG_UNREADABLE
     except PipelineDataError as exc:
         LOGGER.info("Recommendation stopped")
         st.session_state.result = None
-        st.error(str(exc))
+        return str(exc)
     except Exception:
         LOGGER.exception("Demo processing failed")
         st.session_state.result = None
-        st.error("The transcript could not be processed. Please use a supported UTAS transcript PDF.")
+        return "The transcript could not be processed. Please use a supported UTAS transcript PDF."
 
 
 def _student_summary(result) -> None:
@@ -227,16 +227,6 @@ def _limitations() -> None:
     st.header("Current Limitations")
     for item in manager_limitations():
         st.write(f"- {item}")
-
-
-def _download(result) -> None:
-    code = result.metadata.get("student_code") or "student"
-    st.download_button(
-        "Download Recommendation Excel",
-        data=recommendation_workbook(result),
-        file_name=f"{code}_phase1_recommendation.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
 
 def _history_table(result) -> pd.DataFrame:

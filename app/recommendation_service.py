@@ -29,6 +29,7 @@ class RecommendationResult:
     remaining_courses: pd.DataFrame
     prerequisite_results: pd.DataFrame
     candidate_courses: pd.DataFrame
+    eligible_courses: pd.DataFrame
     selected_courses: pd.DataFrame
     blocked_courses: pd.DataFrame
     warnings: list[str] = field(default_factory=list)
@@ -103,6 +104,7 @@ def _assemble(
         holdout_codes = set(attempts.loc[attempts["Holdout"].eq(True), "Course Code"].astype(str))
 
     selected = _present_selected(record["selected"], REASONS, holdout_codes)
+    eligible = _present_eligible(record["audit"], selected, REASONS, STATUS_ALLOWED)
     blocked = _present_blocked(record["audit"], STATUS_ALLOWED)
     prerequisites = record["prerequisites"]
     warnings = list(extraction_warnings)
@@ -159,8 +161,10 @@ def _assemble(
         "assigned_pathway": pathway,
         "pathway_readiness": _text(recommendation.get("Pathway Readiness")),
         "recommendation_status": status,
+        "eligible_courses": int(len(eligible)),
         "recommended_courses": int(len(selected)),
         "recommended_credits": credits,
+        "plan_is_subset_of_eligible": set(selected["Course"].astype(str)).issubset(set(eligible["Course"].astype(str))) if not selected.empty else True,
         "academic_load": load_label,
         "prerequisite_violations": violations,
         "blocked_courses_selected": blocked_selected,
@@ -184,6 +188,7 @@ def _assemble(
         remaining_courses=record["remaining"],
         prerequisite_results=prerequisites,
         candidate_courses=record["audit"],
+        eligible_courses=eligible,
         selected_courses=selected,
         blocked_courses=blocked,
         warnings=list(dict.fromkeys(warnings)),
@@ -241,6 +246,45 @@ def _present_selected(
         )
     frame = pd.DataFrame(rows, columns=columns)
     return frame.sort_values(["Rank", "Course"], kind="mergesort").reset_index(drop=True)
+
+
+def _present_eligible(
+    audit: pd.DataFrame,
+    selected: pd.DataFrame,
+    reasons: dict[str, str],
+    allowed_status: str,
+) -> pd.DataFrame:
+    """Rank every course the engine marked Allowed. Do not cut the list to a semester size."""
+
+    columns = ["Priority", "Course", "Course Name", "Type", "Credits", "Rule Score", "Reason"]
+    if audit.empty or "Candidate Status" not in audit.columns:
+        return pd.DataFrame(columns=columns)
+    allowed = audit.loc[audit["Candidate Status"].map(_text).eq(allowed_status)].copy()
+    if allowed.empty:
+        return pd.DataFrame(columns=columns)
+    selected_reasons = {}
+    if not selected.empty and "Course" in selected.columns:
+        selected_reasons = {
+            _text(row.get("Course")): _text(row.get("Recommendation Reason"))
+            for _, row in selected.iterrows()
+        }
+    rows = []
+    for _, row in allowed.iterrows():
+        code = _text(row.get("Course Code"))
+        priority_class = _text(row.get("Advising Priority Class"))
+        rows.append(
+            {
+                "Priority": pd.to_numeric(row.get("Rule Priority"), errors="coerce"),
+                "Course": code,
+                "Course Name": _text(row.get("Course Title")),
+                "Type": priority_class,
+                "Credits": pd.to_numeric(row.get("Credit Hours"), errors="coerce"),
+                "Rule Score": pd.to_numeric(row.get("Rule-Based Score"), errors="coerce"),
+                "Reason": selected_reasons.get(code) or reasons.get(priority_class, ""),
+            }
+        )
+    frame = pd.DataFrame(rows, columns=columns)
+    return frame.sort_values(["Priority", "Course"], kind="mergesort").reset_index(drop=True)
 
 
 def _present_blocked(audit: pd.DataFrame, allowed_status: str) -> pd.DataFrame:

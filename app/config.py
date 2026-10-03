@@ -46,8 +46,8 @@ MSG_PREREQUISITE = (
     "Recommendation requires academic review because prerequisite information is incomplete."
 )
 MSG_PRIVACY = (
-    "Uploaded transcripts are processed for the current session and are not "
-    "intentionally stored permanently by this Phase-1 demo."
+    "Uploaded transcripts are processed for the current demo session and are not "
+    "intentionally stored permanently."
 )
 
 UNRESOLVED_PATHWAYS = {

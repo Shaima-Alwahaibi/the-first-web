@@ -1,7 +1,7 @@
 # Intelligent Student Course Recommendation System
 ## Phase 1 – Rule-Based Recommendation Demo
 
-One Streamlit page for the completed academic-rule phase. It reads a transcript, then shows the validated study-plan match, remaining courses, prerequisites, eligibility, and rule-based plan. It does not train a model.
+One Streamlit page for the completed academic-rule phase. It reads a transcript, then shows the validated study-plan match, the full ranked list of eligible courses, and the semester bundle selected by the existing load rules. It does not train a model and it does not cut the eligible list down to four courses.
 
 ```text
 Transcript PDF
@@ -48,7 +48,7 @@ Uploaded transcripts are kept for the current session only. Do not commit new tr
 
 Repository: https://github.com/Shaima-Alwahaibi/the-first-web
 
-On Streamlit Community Cloud, deploy branch `main` with main file `app.py`.
+Branch `main`. Main file `app.py`.
 
 ## Limitations
 

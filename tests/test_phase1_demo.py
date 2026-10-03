@@ -33,7 +33,13 @@ from app.export_service import recommendation_workbook  # noqa: E402
 from app.pipeline_adapter import PipelineDataError, load_student  # noqa: E402
 from app.recommendation_service import generate_recommendation, rule_framework  # noqa: E402
 from app.transcript_parser import TranscriptReadError, parse_transcript_pdf  # noqa: E402
-from rule_based_recommender import SCORE, _score  # noqa: E402
+from rule_based_recommender import (  # noqa: E402
+    SCORE,
+    STATUS_INSUFFICIENT,
+    STATUS_REVIEW_CREDITS,
+    _score,
+    build_rule_based_recommendations,
+)
 
 
 class TranscriptParserTests(unittest.TestCase):
@@ -123,6 +129,67 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), MSG_SPECIALIZATION)
 
 
+class SemesterSelectionTests(unittest.TestCase):
+    def test_short_eligible_list_is_not_padded_to_four(self) -> None:
+        result = _engine(
+            minimum_courses=4,
+            maximum_courses=6,
+            minimum_credits=12,
+            maximum_credits=18,
+            courses=[_candidate("C1", CLASS_CURRENT), _candidate("C2", CLASS_CURRENT)],
+        )
+        selected = _selected_codes(result)
+        eligible = _allowed_codes(result)
+        self.assertEqual(result["students"].iloc[0]["Recommendation Status"], STATUS_INSUFFICIENT)
+        self.assertEqual(selected, ["C1", "C2"])
+        self.assertEqual(eligible, ["C1", "C2"])
+        self.assertNotEqual(len(selected), 4)
+
+    def test_extra_eligible_courses_are_not_all_placed_in_the_semester(self) -> None:
+        courses = [_candidate(f"C{index}", CLASS_CURRENT) for index in range(1, 7)]
+        result = _engine(
+            minimum_courses=4,
+            maximum_courses=6,
+            minimum_credits=12,
+            maximum_credits=18,
+            courses=courses,
+        )
+        selected = _selected_codes(result)
+        eligible = _allowed_codes(result)
+        self.assertEqual(len(eligible), 6)
+        self.assertEqual(len(selected), 4)
+        self.assertTrue(set(selected).issubset(set(eligible)))
+        self.assertLess(len(selected), len(eligible))
+
+    def test_probation_bundle_stays_within_four_courses_and_twelve_credits(self) -> None:
+        courses = [_candidate(f"C{index}", CLASS_CURRENT) for index in range(1, 7)]
+        result = _engine(
+            probation="Probation",
+            minimum_courses=None,
+            maximum_courses=4,
+            minimum_credits=12,
+            maximum_credits=12,
+            courses=courses,
+        )
+        student = result["students"].iloc[0]
+        self.assertLessEqual(int(student["Confirmed Recommended Course Count"]), 4)
+        self.assertEqual(float(student["Confirmed Recommended Credits"]), 12)
+        self.assertEqual(len(_allowed_codes(result)), 6)
+
+    def test_probation_without_a_twelve_credit_bundle_is_not_filled(self) -> None:
+        result = _engine(
+            probation="Probation",
+            minimum_courses=None,
+            maximum_courses=4,
+            minimum_credits=12,
+            maximum_credits=12,
+            courses=[_candidate("ONLY", CLASS_CURRENT, credits=3)],
+        )
+        self.assertEqual(result["students"].iloc[0]["Recommendation Status"], STATUS_REVIEW_CREDITS)
+        self.assertEqual(_selected_codes(result), [])
+        self.assertEqual(_allowed_codes(result), ["ONLY"])
+
+
 class EndToEndTests(unittest.TestCase):
     def test_sample_transcript_reaches_an_exportable_plan(self) -> None:
         parsed = _parse_sample("STUD-175")
@@ -131,9 +198,23 @@ class EndToEndTests(unittest.TestCase):
         self.assertGreater(result.metadata["recommended_courses"], 0)
         self.assertIn("CSSY3202", set(result.selected_courses["Course"].astype(str)))
         self.assertTrue(all(stage["state"] == "confirmed" for stage in result.stages))
+        eligible_codes = set(result.eligible_courses["Course"].astype(str))
+        selected_codes = list(result.selected_courses["Course"].astype(str))
+        self.assertEqual(result.metadata["eligible_courses"], 22)
+        self.assertEqual(selected_codes, ["CSRM3202", "CSSY3202", "CSSY3203", "CSSE2203"])
+        self.assertTrue(set(selected_codes).issubset(eligible_codes))
+        self.assertGreater(len(eligible_codes), len(selected_codes))
+        self.assertNotEqual(list(result.eligible_courses["Course"].astype(str).head(4)), selected_codes)
+        self.assertTrue(result.metadata["plan_is_subset_of_eligible"])
+        self.assertTrue(result.eligible_courses["Rule Score"].map(float).gt(0).all())
         workbook = recommendation_workbook(result)
         sheets = pd.ExcelFile(BytesIO(workbook)).sheet_names
-        self.assertEqual(sheets, ["Student Summary", "Recommended Courses", "Blocked Courses"])
+        self.assertEqual(
+            sheets,
+            ["Student Summary", "All Eligible Courses", "Recommended Semester Plan", "Blocked Courses"],
+        )
+        exported = pd.read_excel(BytesIO(workbook), sheet_name="All Eligible Courses")
+        self.assertEqual(len(exported), 22)
         self.assertNotIn(b"C:\\Users", workbook)
 
     def test_bundled_demo_extract_matches_the_validated_plan(self) -> None:
@@ -152,6 +233,55 @@ class EndToEndTests(unittest.TestCase):
 def _parse_sample(student_code: str) -> dict[str, object]:
     path = sample_pdfs()[student_code]
     return parse_transcript_pdf(path.read_bytes(), path.name)
+
+
+def _candidate(code: str, priority: str, credits: int = 3) -> dict[str, object]:
+    return {
+        "Student Code": "S1",
+        "Course Code": code,
+        "Course Title": code,
+        "Credit Hours": credits,
+        "Course Level": "Diploma",
+        "Remaining Reason": "Not Yet Taken",
+        "Prerequisite Eligibility": "Eligible",
+        "Advising Priority Class": priority,
+        "Mixing Allowed": "No",
+        "Candidate Status": STATUS_ALLOWED,
+    }
+
+
+def _engine(**kwargs) -> dict[str, object]:
+    courses = kwargs.pop("courses")
+    student = {
+        "Student Code": "S1",
+        "Current Level": "Diploma",
+        "Assigned Pathway": "Software Engineering",
+        "Pathway Readiness": "Full Pathway Known",
+        "Probation Status": kwargs.pop("probation", "Not Probation"),
+        "Advising Status": "Envelope Determined",
+        "Advisor Review Required": "No",
+        "Minimum Courses": kwargs.pop("minimum_courses", 1),
+        "Maximum Courses": kwargs.pop("maximum_courses", 6),
+        "Minimum Credits": kwargs.pop("minimum_credits", 3),
+        "Maximum Credits": kwargs.pop("maximum_credits", 18),
+        "Mixing Allowed": "No",
+        "Withdrawal Allowance": 1,
+        "Withdrawals Recorded": 0,
+    }
+    return build_rule_based_recommendations(pd.DataFrame([student]), pd.DataFrame(courses))
+
+
+def _selected_codes(result: dict[str, object]) -> list[str]:
+    frame = result["recommendations"]
+    if frame.empty:
+        return []
+    return frame["Recommended Course Code"].astype(str).tolist()
+
+
+def _allowed_codes(result: dict[str, object]) -> list[str]:
+    audit = result["audit"]
+    allowed = audit.loc[audit["Candidate Status"].eq(STATUS_ALLOWED), "Course Code"]
+    return allowed.astype(str).tolist()
 
 
 if __name__ == "__main__":

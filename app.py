@@ -38,10 +38,10 @@ def main() -> None:
     st.title("Intelligent Student Course Recommendation System")
     st.subheader("Phase 1 – Rule-Based Recommendation Demo")
     st.write(
-        "Upload a student's transcript to identify completed, failed, withdrawn, and remaining courses, "
-        "check academic eligibility and prerequisites, and generate a rule-based recommended study plan."
+        "Upload a student's transcript to analyze academic history, identify remaining courses, "
+        "check prerequisites and academic eligibility, rank eligible courses, and generate a valid semester recommendation."
     )
-    st.write("This phase uses academic rules only. Machine-learning models will be added in later phases.")
+    st.write("This phase uses academic rules only. Machine-learning models will be added in later research phases.")
     st.caption(MSG_PRIVACY)
 
     _input_section()
@@ -50,7 +50,8 @@ def main() -> None:
         return
     _student_summary(result)
     _history(result)
-    _recommendations(result)
+    _eligible(result)
+    _semester_plan(result)
     _blocked(result)
     _rule_table()
     _limitations()
@@ -131,6 +132,8 @@ def _student_summary(result) -> None:
     second.metric("Failed Courses", _section_count(result, "Failed"))
     third.metric("Withdrawn Courses", _section_count(result, "Withdrawn"))
     fourth.metric("Remaining Courses", _remaining_count(result))
+    for warning in result.warnings:
+        st.caption(warning)
 
 
 def _history(result) -> None:
@@ -142,8 +145,24 @@ def _history(result) -> None:
     st.dataframe(table, hide_index=True, width="stretch")
 
 
-def _recommendations(result) -> None:
-    st.header("Recommended Courses")
+def _eligible(result) -> None:
+    st.header("All Eligible Courses")
+    st.write("Courses that the student is academically allowed to take, ranked by academic priority.")
+    frame = result.eligible_courses
+    st.markdown(f"**Eligible Courses:** {len(frame)}")
+    _show_courses(
+        frame,
+        {"Course": "Course Code"},
+        ["Priority", "Course Code", "Course Name", "Type", "Credits", "Rule Score", "Reason"],
+        "No academically eligible courses were returned for this student.",
+    )
+
+
+def _semester_plan(result) -> None:
+    st.header("Recommended Semester Plan")
+    st.write(
+        "Courses selected for the next semester according to academic priority, prerequisites, load limits, and advising rules."
+    )
     meta = result.metadata
     st.markdown(
         "\n".join(
@@ -154,21 +173,32 @@ def _recommendations(result) -> None:
             ]
         )
     )
-    columns = ["Rank", "Course Code", "Course Name", "Type", "Rule Score", "Reason"]
-    view = result.selected_courses.rename(
-        columns={"Course": "Course Code", "Recommendation Reason": "Reason"}
+    _show_courses(
+        result.selected_courses,
+        {"Course": "Course Code", "Credit Hours": "Credits", "Recommendation Reason": "Reason"},
+        ["Rank", "Course Code", "Course Name", "Type", "Credits", "Rule Score", "Reason"],
+        "The rule engine did not confirm any courses for this student.",
     )
-    show = [column for column in columns if column in view.columns]
-    if view.empty:
-        st.info("The rule engine did not confirm any courses for this student.")
-        return
-    st.dataframe(_scores(view[show], "Rule Score"), hide_index=True, width="stretch")
     notes = [
         note for note in result.selected_courses.get("Holdout Note", pd.Series(dtype=str)).tolist()
         if str(note).strip()
     ]
     if notes:
         st.caption(notes[0])
+
+
+def _show_courses(frame: pd.DataFrame, renames: dict[str, str], columns: list[str], empty_message: str) -> None:
+    view = frame.rename(columns=renames)
+    show = [column for column in columns if column in view.columns]
+    if view.empty:
+        st.info(empty_message)
+        return
+    shown = _scores(view[show], "Rule Score")
+    if "Credits" in shown.columns:
+        shown["Credits"] = shown["Credits"].map(_whole)
+    if "Priority" in shown.columns:
+        shown["Priority"] = shown["Priority"].map(_whole)
+    st.dataframe(shown, hide_index=True, width="stretch")
 
 
 def _blocked(result) -> None:
@@ -184,12 +214,12 @@ def _blocked(result) -> None:
 def _rule_table() -> None:
     st.header("How Rule Score Works")
     st.write("Eligibility is decided before a rule score is used. A course that is not eligible scores 0.00 and is not recommended.")
-    table = rule_framework()
-    table["Rule Score"] = table["Rule Score"].map(lambda value: f"{float(value):.2f}")
+    table = rule_framework().rename(columns={"Academic condition": "Rule Condition", "Advisor meaning": "Meaning"})
     st.dataframe(
-        table.rename(columns={"Academic condition": "Rule Condition", "Advisor meaning": "Meaning"}),
+        table,
         hide_index=True,
         width="stretch",
+        column_config={"Rule Score": st.column_config.NumberColumn(format="%.2f")},
     )
 
 
@@ -224,7 +254,7 @@ def _history_table(result) -> pd.DataFrame:
             code = _text(row.get("Course Code"))
             name = _text(row.get("Course Name") or row.get("Course Title"))
             label = "Repeated" if code in repeated_codes else status
-            rows.append({"Course": f"{code} {name}".strip(), "Grade": _first_grade(row), "Status": label})
+            rows.append({"Course Code": code, "Course Name": name, "Grade": _first_grade(row), "Status": label})
             seen.add(code)
     repeat_frame = result.course_history.get("Repeated", pd.DataFrame())
     if isinstance(repeat_frame, pd.DataFrame) and not repeat_frame.empty:
@@ -234,9 +264,9 @@ def _history_table(result) -> pd.DataFrame:
                 continue
             name = _text(row.get("Course Name") or row.get("Course Title"))
             grade = _text(row.get("Grade")) or _first_grade(row)
-            rows.append({"Course": f"{code} {name}".strip(), "Grade": grade, "Status": "Repeated"})
+            rows.append({"Course Code": code, "Course Name": name, "Grade": grade, "Status": "Repeated"})
             seen.add(code)
-    return pd.DataFrame(rows, columns=["Course", "Grade", "Status"])
+    return pd.DataFrame(rows, columns=["Course Code", "Course Name", "Grade", "Status"])
 
 
 def _first_grade(row) -> str:

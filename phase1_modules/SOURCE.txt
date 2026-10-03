@@ -1,0 +1,5 @@
+Unmodified copies of the Phase-1 research modules.
+
+They are included so this demo can import the validated rule scores when it is cloned on its own.
+When the original research project is the parent folder, those original modules are imported instead.
+Do not edit the copies here. Academic changes belong in the research project.

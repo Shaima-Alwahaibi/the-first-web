@@ -182,6 +182,8 @@ Grade prediction, collaborative filtering, content-based similarity, transformer
 
 ## 15. GitHub repository information
 
-Repository name: `the-first-web`
+Repository: [the-first-web](https://github.com/Shaima-Alwahaibi/the-first-web)
 
-The application expects to be deployed from that repository. Sample transcripts and the two-student validated extract are included so the sample path runs after a clean clone. The full research dataset stays in the original project.
+Branch: `main`
+
+The repository is the deployment source. Sample transcripts and the two-student validated extract are included so the sample path runs after a clean clone. The full research dataset stays in the original project.
